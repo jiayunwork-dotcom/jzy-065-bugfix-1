@@ -20,9 +20,11 @@ export interface GreenAllocation {
  * With minimum greens a water-filling rule applies: time is split by flow
  * ratio, but any phase whose proportional share would fall below its minimum
  * is pinned to that minimum and the leftover is re-split among the other
- * phases. If the minima cannot fit the cycle (their sum exceeds C-L, or a
- * single minimum exceeds it), MIN_GREEN_INFEASIBLE is raised rather than
- * quietly zeroing a phase.
+ * phases. Pinning can cascade — re-splitting among fewer phases may push
+ * *another* phase below its own minimum — so the re-split is repeated until
+ * a round produces no newly binding phase. If the minima cannot fit the cycle
+ * (their sum exceeds C-L, or a single minimum exceeds it), MIN_GREEN_INFEASIBLE
+ * is raised rather than quietly zeroing a phase.
  */
 export function allocateGreens(
   flow: FlowRatioPhase[],
@@ -64,11 +66,15 @@ export function allocateGreens(
   // Water-filling: distribute the whole usable time in proportion to y; pin a
   // phase to its minimum green only when its proportional share would fall
   // below that minimum, remove it, and re-split the leftover among the rest.
+  // Pinning shrinks the pool, so a phase that looked fine in an earlier round
+  // can fall below its own minimum afterwards: loop until a full round finds
+  // no newly binding phase (at most n rounds — each pins at least one phase).
   const active = new Set(flow.map((p) => p.index));
   let remaining = usable;
 
   for (;;) {
     const activePhases = flow.filter((p) => active.has(p.index));
+    if (activePhases.length === 0) break;
     const yActive = activePhases.reduce((sum, p) => sum + p.y, 0);
     if (yActive > 0) {
       const binding = activePhases.filter(
@@ -84,17 +90,28 @@ export function allocateGreens(
         remaining -= m;
         active.delete(p.index);
       }
-      const rest = flow.filter((p) => active.has(p.index));
-      const yRest = rest.reduce((sum, p) => sum + p.y, 0);
-      if (yRest > 0) {
-        for (const p of rest) greens[p.index] = (p.y / yRest) * remaining;
-        break;
-      }
+      // Continue the loop: the reduced leftover is re-examined against the
+      // minima of the phases still active.
     } else {
       // No flow among the active phases: split the leftover equally.
       const share = activePhases.length > 0 ? remaining / activePhases.length : 0;
       for (const p of activePhases) greens[p.index] = (p.minGreen ?? 0) + share;
       break;
+    }
+  }
+
+  // A declared minimum must never be undercut silently: the balance identity
+  // sum(g)+L === C alone cannot catch that (a violated minimum still closes
+  // the books). The feasibility checks above make this unreachable; it stands
+  // as a hard guarantee on the contract of this function.
+  for (const p of flow) {
+    const m = p.minGreen ?? 0;
+    if (greens[p.index]! < m - BALANCE_TOLERANCE) {
+      throw new TimingError(
+        'MIN_GREEN_INFEASIBLE',
+        `phase ${p.index} minimum green ${m}s cannot be honoured at cycle ${cycle}s (allocated ${greens[p.index]!.toFixed(3)}s)`,
+        { phaseIndex: p.index, minGreen: m, allocated: greens[p.index], usable, cycle },
+      );
     }
   }
 

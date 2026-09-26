@@ -59,6 +59,28 @@ describe('single-point scan evaluation (always freshly split for that C)', () =>
     ).toThrowError(expect.objectContaining({ code: 'OVERSATURATED_Y' }));
   });
 
+  it('honours cascading minimum greens at each candidate cycle and marks unfit candidates as errors', () => {
+    // Phase 0's 40 s minimum only pushes phase 2 below its own 18 s minimum
+    // after the first re-split. At C=100 the multi-round allocation is
+    // 40/25.6/18/6.4; at C=65 the usable 55 s cannot even hold 40+18.
+    const phases = [
+      { q: 50, s: 1000, minGreen: 40 },
+      { q: 200, s: 1000 },
+      { q: 100, s: 1000, minGreen: 18 },
+      { q: 50, s: 1000 },
+    ];
+    const ok = evaluateScanPoint(phases, 10, 100);
+    expect(ok.status).toBe('ok');
+    // ScanPhasePoint carries lambda; g = lambda*C must be the 18 s minimum.
+    expect(ok.phases![2]!.lambda * 100).toBeCloseTo(18, 9);
+    expect(ok.phases![0]!.lambda * 100).toBeCloseTo(40, 9);
+
+    const unfit = evaluateScanPoint(phases, 10, 65);
+    expect(unfit.status).toBe('error');
+    expect(unfit.errorCode).toBe('MIN_GREEN_INFEASIBLE');
+    expect(unfit.totalDelayRate).toBeUndefined();
+  });
+
   it('validates the candidate cycle list', () => {
     const base = { phases: demoScenario.phases, lostTime: 12 };
     expect(() => validateScanRequest({ ...base, cycles: [] })).toThrow();

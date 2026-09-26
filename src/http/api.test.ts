@@ -127,6 +127,55 @@ describe('POST /api/evaluate', () => {
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe('PHASE_SATURATED');
   });
+
+  it('honours cascading minimum greens across re-split rounds instead of silently undercutting one', async () => {
+    // Phase 0's 40 s minimum only pushes phase 2 below its own 18 s minimum
+    // after the first re-split; the allocation must iterate (40/25.6/18/6.4).
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/evaluate',
+      payload: {
+        lostTime: 10,
+        cycle: 100,
+        phases: [
+          { q: 50, s: 1000, minGreen: 40 },
+          { q: 200, s: 1000 },
+          { q: 100, s: 1000, minGreen: 18 },
+          { q: 50, s: 1000 },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.phases[0].g).toBeCloseTo(40, 9);
+    expect(body.phases[2].g).toBeCloseTo(18, 9);
+    for (const p of body.phases) {
+      if (p.minGreen !== null) expect(p.g).toBeGreaterThanOrEqual(p.minGreen);
+      expect(p.uniformDelay).toBeGreaterThan(0);
+    }
+    const sumG = body.phases.reduce((a: number, p: { g: number }) => a + p.g, 0);
+    expect(Math.abs(sumG + body.lostTime - body.cycle)).toBeLessThan(1e-8);
+  });
+
+  it('reports 422 MIN_GREEN_INFEASIBLE when the declared minima cannot fit the cycle', async () => {
+    // C=65 => usable 55 s, but the two minima alone need 40 + 18 = 58 s.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/evaluate',
+      payload: {
+        lostTime: 10,
+        cycle: 65,
+        phases: [
+          { q: 50, s: 1000, minGreen: 40 },
+          { q: 200, s: 1000 },
+          { q: 100, s: 1000, minGreen: 18 },
+          { q: 50, s: 1000 },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe('MIN_GREEN_INFEASIBLE');
+  });
 });
 
 describe('POST /api/scans (interruptible long job)', () => {

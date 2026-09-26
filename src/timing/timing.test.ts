@@ -122,6 +122,86 @@ describe('green split and the strict green-balance identity', () => {
   });
 });
 
+describe('cascading minimum greens (multi-round water-filling)', () => {
+  it('honours a minimum that only falls short after another phase is pinned (reported case)', () => {
+    // L=10, C=100 => usable 90. y = .05/.20/.10/.05, Y = .40.
+    // Round 1 shares 11.25/45/22.5/11.25: phase 0 binds (min 40), phase 2
+    // looks fine (22.5 >= 18). Pinning phase 0 leaves 50 s, whose split over
+    // y=.20/.10/.05 is 28.57/14.29/7.14 — only THEN does phase 2 fall below
+    // its own 18 s minimum. A second round must pin phase 2 too, leaving the
+    // rest to phases 1/3: final greens 40 / 25.6 / 18 / 6.4.
+    const r = solveTiming({
+      lostTime: 10,
+      cycle: 100,
+      phases: [
+        { q: 50, s: 1000, minGreen: 40 },
+        { q: 200, s: 1000 },
+        { q: 100, s: 1000, minGreen: 18 },
+        { q: 50, s: 1000 },
+      ],
+    });
+    expect(r.phases[0]!.g).toBeCloseTo(40, 12);
+    expect(r.phases[1]!.g).toBeCloseTo(25.6, 12);
+    expect(r.phases[2]!.g).toBeCloseTo(18, 12);
+    expect(r.phases[3]!.g).toBeCloseTo(6.4, 12);
+    // Every declared minimum is honoured, books still close, and the emitted
+    // delay is a physically meaningful one (no phase pushed to saturation).
+    for (const p of r.phases) {
+      if (p.minGreen !== null) expect(p.g).toBeGreaterThanOrEqual(p.minGreen);
+      expect(p.x).toBeLessThan(1);
+      expect(p.uniformDelay).toBeGreaterThan(0);
+    }
+    const total = r.phases.reduce((a, p) => a + p.g, 0) + r.lostTime;
+    expect(total).toBeCloseTo(r.cycle, 9);
+    expect(r.greenBalanceResidual).toBeLessThanOrEqual(BALANCE_TOLERANCE);
+  });
+
+  it('iterates the re-split for as many rounds as the cascade needs', () => {
+    // y = .40/.20/.10/.05, Y = .75, usable 90. Proportional shares are
+    // 48/24/12/6: only phase 0 binds (min 50). Re-splitting its 40 s leftover
+    // over y=.20/.10/.05 gives 22.86/11.43/5.71: phase 1 (min 23) binds only
+    // in round 2. Re-splitting again gives phase 2 11.33 < 11.4: a THIRD
+    // round is required. Final greens 50 / 23 / 11.4 / 5.6.
+    const r = solveTiming({
+      lostTime: 10,
+      cycle: 100,
+      phases: [
+        { q: 400, s: 1000, minGreen: 50 },
+        { q: 200, s: 1000, minGreen: 23 },
+        { q: 100, s: 1000, minGreen: 11.4 },
+        { q: 50, s: 1000 },
+      ],
+    });
+    expect(r.phases[0]!.g).toBeCloseTo(50, 12);
+    expect(r.phases[1]!.g).toBeCloseTo(23, 12);
+    expect(r.phases[2]!.g).toBeCloseTo(11.4, 12);
+    expect(r.phases[3]!.g).toBeCloseTo(5.6, 12);
+    for (const p of r.phases) {
+      if (p.minGreen !== null) expect(p.g).toBeGreaterThanOrEqual(p.minGreen);
+      expect(p.x).toBeLessThan(1);
+    }
+    const total = r.phases.reduce((a, p) => a + p.g, 0) + r.lostTime;
+    expect(total).toBeCloseTo(r.cycle, 9);
+  });
+
+  it('declares MIN_GREEN_INFEASIBLE when cascading minima cannot fit the usable green', () => {
+    // Same shape as the reported case but C=65: usable 55 < 40 + 18 = 58.
+    const input: TimingInput = {
+      lostTime: 10,
+      cycle: 65,
+      phases: [
+        { q: 50, s: 1000, minGreen: 40 },
+        { q: 200, s: 1000 },
+        { q: 100, s: 1000, minGreen: 18 },
+        { q: 50, s: 1000 },
+      ],
+    };
+    expect(() => solveTiming(input)).toThrowError(
+      expect.objectContaining({ code: 'MIN_GREEN_INFEASIBLE' }),
+    );
+  });
+});
+
 describe('uniform delay and saturation', () => {
   it('computes d = 0.5 C (1-lambda)^2 / (1-lambda x) and delayRate = q*d', () => {
     const r = solveTiming(case3());
