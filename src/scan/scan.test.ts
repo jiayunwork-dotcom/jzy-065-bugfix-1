@@ -46,6 +46,27 @@ describe('single-point scan evaluation (always freshly split for that C)', () =>
     expect(short.phases).toBeUndefined();
   });
 
+  it('applies minimum greens per point: infeasible cycles error, feasible ones chain-pin', () => {
+    const phases = [
+      { q: 50, s: 1000, minGreen: 40 },
+      { q: 200, s: 1000 },
+      { q: 100, s: 1000, minGreen: 18 },
+      { q: 50, s: 1000 },
+    ];
+    // usable 50 < 40 + 18: this candidate cannot host the declared minima
+    const tight = evaluateScanPoint(phases, 10, 60);
+    expect(tight.status).toBe('error');
+    expect(tight.errorCode).toBe('MIN_GREEN_INFEASIBLE');
+    expect(tight.phases).toBeUndefined();
+    // usable 90: phase 0 pinned to 40, then phase 2 to 18 (lambda = g/C)
+    const roomy = evaluateScanPoint(phases, 10, 100);
+    expect(roomy.status).toBe('ok');
+    expect(roomy.phases![0]!.lambda).toBeCloseTo(40 / 100, 12);
+    expect(roomy.phases![2]!.lambda).toBeCloseTo(18 / 100, 12);
+    expect(roomy.phases![1]!.lambda).toBeCloseTo(25.6 / 100, 12);
+    expect(roomy.phases![3]!.lambda).toBeCloseTo(6.4 / 100, 12);
+  });
+
   it('rejects creating a scan for an oversaturated case', () => {
     expect(() =>
       validateScanRequest({

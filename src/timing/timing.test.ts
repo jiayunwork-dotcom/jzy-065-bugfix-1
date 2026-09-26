@@ -122,6 +122,95 @@ describe('green split and the strict green-balance identity', () => {
   });
 });
 
+describe('chained minimum greens (multi-round water-filling)', () => {
+  // Regression: pinning one phase to its minimum shrinks the leftover, which
+  // can push ANOTHER phase below its own minimum. The split must re-check the
+  // survivors after every pinning round instead of settling for one re-split.
+  const chainedInput: TimingInput = {
+    lostTime: 10,
+    cycle: 100,
+    phases: [
+      { q: 50, s: 1000, minGreen: 40 },
+      { q: 200, s: 1000 },
+      { q: 100, s: 1000, minGreen: 18 },
+      { q: 50, s: 1000 },
+    ],
+  };
+
+  it('honours a minimum that only becomes binding after another phase is pinned', () => {
+    // usable = 90. Round 1 shares 11.25/45/22.5/11.25 pin phase 0 to 40; the
+    // re-split of 50 would give phase 2 only 14.29 < 18, so a second round
+    // pins it to 18 and the remaining 32 splits 0.2:0.05 => 25.6/6.4.
+    const r = solveTiming(chainedInput);
+    expect(r.phases[0]!.g).toBeCloseTo(40, 12);
+    expect(r.phases[1]!.g).toBeCloseTo(25.6, 12);
+    expect(r.phases[2]!.g).toBeCloseTo(18, 12);
+    expect(r.phases[3]!.g).toBeCloseTo(6.4, 12);
+    // every declared minimum is honoured and the balance still closes
+    for (const p of r.phases) {
+      if (p.minGreen !== null) expect(p.g).toBeGreaterThanOrEqual(p.minGreen);
+      expect(p.x).toBeLessThan(1);
+      expect(p.uniformDelay).toBeGreaterThan(0);
+    }
+    const total = r.phases.reduce((a, p) => a + p.g, 0) + r.lostTime;
+    expect(total).toBeCloseTo(r.cycle, 9);
+    expect(r.greenBalanceResidual).toBeLessThanOrEqual(BALANCE_TOLERANCE);
+  });
+
+  it('allocates the same chained split at the raw allocator level', () => {
+    const parsed = normalizeTimingInput(chainedInput);
+    const flow = computeFlowRatios(parsed.phases);
+    const { greens, residual } = allocateGreens(flow.phases, 10, 100);
+    expect(greens).toHaveLength(4);
+    expect(greens[0]).toBeCloseTo(40, 12);
+    expect(greens[2]).toBeCloseTo(18, 12);
+    expect(residual).toBeLessThanOrEqual(BALANCE_TOLERANCE);
+  });
+
+  it('chains through three phases: two pinning rounds before the split settles', () => {
+    // y = .2/.2/.04, usable = 110. Round 1 shares 50/50/10 pin phase 0 (min
+    // 60); round 2 gives phase 1 only 41.67 < 44, pinning it too; phase 2
+    // then takes the leftover 6. A single re-split would leave phase 1 short.
+    const r = solveTiming({
+      lostTime: 10,
+      cycle: 120,
+      phases: [
+        { q: 200, s: 1000, minGreen: 60 },
+        { q: 200, s: 1000, minGreen: 44 },
+        { q: 40, s: 1000 },
+      ],
+    });
+    expect(r.phases[0]!.g).toBeCloseTo(60, 12);
+    expect(r.phases[1]!.g).toBeCloseTo(44, 12);
+    expect(r.phases[2]!.g).toBeCloseTo(6, 12);
+    for (const p of r.phases) expect(p.x).toBeLessThan(1);
+  });
+
+  it('does not pin a phase whose re-split share lands exactly on its minimum', () => {
+    // After phase 0 is pinned to 60 the leftover 30 splits 15/15; phase 1's
+    // share equals its 15 s minimum, so it must stay a proportional share.
+    const r = solveTiming({
+      lostTime: 10,
+      cycle: 100,
+      phases: [
+        { q: 100, s: 1000, minGreen: 60 },
+        { q: 100, s: 1000, minGreen: 15 },
+        { q: 100, s: 1000 },
+      ],
+    });
+    expect(r.phases[0]!.g).toBeCloseTo(60, 12);
+    expect(r.phases[1]!.g).toBeCloseTo(15, 12);
+    expect(r.phases[2]!.g).toBeCloseTo(15, 12);
+  });
+
+  it('reports MIN_GREEN_INFEASIBLE when the chained minima cannot fit the cycle', () => {
+    // Same demands as the chained case but at C = 60: usable 50 < 40 + 18.
+    expect(() => solveTiming({ ...chainedInput, cycle: 60 })).toThrowError(
+      expect.objectContaining({ code: 'MIN_GREEN_INFEASIBLE' }),
+    );
+  });
+});
+
 describe('uniform delay and saturation', () => {
   it('computes d = 0.5 C (1-lambda)^2 / (1-lambda x) and delayRate = q*d', () => {
     const r = solveTiming(case3());

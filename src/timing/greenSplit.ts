@@ -20,9 +20,12 @@ export interface GreenAllocation {
  * With minimum greens a water-filling rule applies: time is split by flow
  * ratio, but any phase whose proportional share would fall below its minimum
  * is pinned to that minimum and the leftover is re-split among the other
- * phases. If the minima cannot fit the cycle (their sum exceeds C-L, or a
- * single minimum exceeds it), MIN_GREEN_INFEASIBLE is raised rather than
- * quietly zeroing a phase.
+ * phases. Pinning shrinks the leftover, which can push ANOTHER phase below
+ * its own minimum, so the survivors are re-checked after every pinning round
+ * until each remaining share clears its minimum (each round removes at least
+ * one phase, so this terminates). If the minima cannot fit the cycle (their
+ * sum exceeds C-L, or a single minimum exceeds it), MIN_GREEN_INFEASIBLE is
+ * raised rather than quietly zeroing a phase.
  */
 export function allocateGreens(
   flow: FlowRatioPhase[],
@@ -84,18 +87,16 @@ export function allocateGreens(
         remaining -= m;
         active.delete(p.index);
       }
-      const rest = flow.filter((p) => active.has(p.index));
-      const yRest = rest.reduce((sum, p) => sum + p.y, 0);
-      if (yRest > 0) {
-        for (const p of rest) greens[p.index] = (p.y / yRest) * remaining;
-        break;
-      }
-    } else {
-      // No flow among the active phases: split the leftover equally.
-      const share = activePhases.length > 0 ? remaining / activePhases.length : 0;
-      for (const p of activePhases) greens[p.index] = (p.minGreen ?? 0) + share;
-      break;
+      // Loop back and re-check the survivors: reserving time for the phases
+      // just pinned leaves a smaller leftover, which can push another phase
+      // below its own minimum. A single re-split here would silently hand
+      // that phase less than its declared minimum.
+      continue;
     }
+    // No flow among the active phases: split the leftover equally.
+    const share = activePhases.length > 0 ? remaining / activePhases.length : 0;
+    for (const p of activePhases) greens[p.index] = (p.minGreen ?? 0) + share;
+    break;
   }
 
   const sumGreen = greens.reduce((a, b) => a + b, 0);
